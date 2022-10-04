@@ -6,112 +6,143 @@
  * @flow strict-local
  */
 
-import React from 'react';
-import type {Node} from 'react';
-import {
-  SafeAreaView,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  useColorScheme,
-  View,
-} from 'react-native';
+import React, {useEffect, useRef, useState} from 'react';
+import {ScrollView, Image, Text, TouchableOpacity, View} from 'react-native';
 
-import {
-  Colors,
-  DebugInstructions,
-  Header,
-  LearnMoreLinks,
-  ReloadInstructions,
-} from 'react-native/Libraries/NewAppScreen';
+import SendBird from 'sendbird';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {GroupChannel} from 'sendbird';
 
-/* $FlowFixMe[missing-local-annot] The type annotation(s) required by Flow's
- * LTI update could not be added via codemod */
-const Section = ({children, title}): Node => {
-  const isDarkMode = useColorScheme() === 'dark';
+const sb = new SendBird({
+  appId: '',
+  localCacheEnabled: true,
+});
+
+sb.useAsyncStorageAsDatabase(AsyncStorage);
+
+const App = () => {
+  const [user, setUser] = useState();
+  const [channel, setChannel] = useState();
+
+  useEffect(() => {
+    sb.connect('USER_1', (_user, err) => {
+      if (_user) {
+        setUser(_user);
+      }
+    });
+  }, []);
+
   return (
-    <View style={styles.sectionContainer}>
-      <Text
-        style={[
-          styles.sectionTitle,
-          {
-            color: isDarkMode ? Colors.white : Colors.black,
-          },
-        ]}>
-        {title}
-      </Text>
-      <Text
-        style={[
-          styles.sectionDescription,
-          {
-            color: isDarkMode ? Colors.light : Colors.dark,
-          },
-        ]}>
-        {children}
-      </Text>
+    <View
+      style={{
+        paddingTop: 80,
+        justifyContent: 'center',
+        height: '100%',
+      }}>
+      <Text>USER: {user?.userId}</Text>
+      {channel && <Channel channel={channel} setChannel={setChannel} />}
+      {user && <Channels setChannel={setChannel} />}
     </View>
   );
 };
 
-const App: () => Node = () => {
-  const isDarkMode = useColorScheme() === 'dark';
+const Channels = ({setChannel}) => {
+  const [, setState] = useState(0);
+  const collection = useRef(
+    sb.GroupChannel.createGroupChannelCollection().setLimit(20).build(),
+  );
 
-  const backgroundStyle = {
-    backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
-  };
+  useEffect(() => {
+    (async () => {
+      while (collection.current.hasMore) {
+        await collection.current.loadMore();
+        setState(p => p + 1);
+      }
+    })();
+  }, []);
 
   return (
-    <SafeAreaView style={backgroundStyle}>
-      <StatusBar
-        barStyle={isDarkMode ? 'light-content' : 'dark-content'}
-        backgroundColor={backgroundStyle.backgroundColor}
-      />
-      <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
-        style={backgroundStyle}>
-        <Header />
-        <View
-          style={{
-            backgroundColor: isDarkMode ? Colors.black : Colors.white,
-          }}>
-          <Section title="Step One">
-            Edit <Text style={styles.highlight}>App.js</Text> to change this
-            screen and then come back to see your edits.
-          </Section>
-          <Section title="See Your Changes">
-            <ReloadInstructions />
-          </Section>
-          <Section title="Debug">
-            <DebugInstructions />
-          </Section>
-          <Section title="Learn More">
-            Read the docs to discover what to do next:
-          </Section>
-          <LearnMoreLinks />
-        </View>
-      </ScrollView>
-    </SafeAreaView>
+    <ScrollView style={{borderWidth: 1}}>
+      {collection.current.channelList.map(channel => {
+        return (
+          <TouchableOpacity
+            key={channel.url}
+            onPress={() => setChannel(channel)}>
+            <Image
+              source={{uri: channel.coverUrl}}
+              style={{width: 30, height: 30, borderRadius: 15}}
+            />
+            <Text>
+              {channel.name} {channel.url}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </ScrollView>
   );
 };
 
-const styles = StyleSheet.create({
-  sectionContainer: {
-    marginTop: 32,
-    paddingHorizontal: 24,
-  },
-  sectionTitle: {
-    fontSize: 24,
-    fontWeight: '600',
-  },
-  sectionDescription: {
-    marginTop: 8,
-    fontSize: 18,
-    fontWeight: '400',
-  },
-  highlight: {
-    fontWeight: '700',
-  },
-});
+const Channel = ({channel, setChannel}: {channel: GroupChannel}) => {
+  const [messages, setMessages] = useState([]);
+  const collection = useRef(
+    channel.createMessageCollection().setLimit(50).build(),
+  );
+
+  useEffect(() => {
+    collection.current
+      .initialize(
+        sb.MessageCollection.MessageCollectionInitPolicy
+          .CACHE_AND_REPLACE_BY_API,
+      )
+      .onCacheResult((err, messages) => {
+        console.log('onCache', err, messages.length);
+        setMessages(messages);
+      })
+      .onApiResult((err, messages) => {
+        console.log('onApi', err, messages.length);
+        setMessages(messages);
+      });
+  }, []);
+
+  return (
+    <View key={channel.url} style={{borderWidth: 2}}>
+      <View style={{flexDirection: 'row', justifyContent: 'space-around'}}>
+        <TouchableOpacity
+          onPress={() => {
+            const params = new sb.UserMessageParams();
+            params.message = 'TEXT_' + Math.random();
+            channel.sendUserMessage(params, msg => {
+              setMessages(prev => [...prev, msg]);
+            });
+          }}>
+          <Text>{'Send message'}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => setChannel()}>
+          <Text>{'Clear'}</Text>
+        </TouchableOpacity>
+        {collection.current.hasPrevious && (
+          <TouchableOpacity
+            onPress={async () => {
+              if (collection.current.hasPrevious) {
+                const list = await collection.current.loadPrevious();
+                setMessages(prev => [...prev, ...list]);
+              }
+            }}>
+            <Text>{'load more'}</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+      <ScrollView>
+        {messages.map(msg => {
+          return (
+            <Text key={msg.messageId ?? msg.reqId} style={{borderWidth: 1}}>
+              {msg.message}
+            </Text>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+};
 
 export default App;
